@@ -71,3 +71,13 @@ SENSOR_TYPES = {
     CONF_COINCIDENT_PEAK_PREDICTION_ZONE: ["Coincident Peak Prediction (Zone)", "MW"],
     CONF_COINCIDENT_PEAK_PREDICTION_SYSTEM: ["Coincident Peak Prediction (System)", "MW"],
 }
+
+# Days PJM consider's holidays ("NERC Off-Peak Days" as of 2026)
+PJM_HOLIDAYS = [
+    "New Year's Day",
+    "Memorial Day",
+    "Independence Day",
+    "Labor Day",
+    "Thanksgiving Day",
+    "Christmas Day" 
+]
