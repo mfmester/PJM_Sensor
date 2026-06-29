@@ -3,7 +3,7 @@
   "name": "PJM Sensor",
   "version": "2.1.5",
   "documentation": "https://github.com/jabbauer/PJM_sensor",
-  "requirements": ["aiohttp", "async_timeout", "voluptuous", "numpy", "scipy"],
+  "requirements": ["aiohttp", "async_timeout", "voluptuous", "numpy", "scipy", "holidays"],
   "dependencies": [],
   "codeowners": ["@jabbauer"],
   "config_flow": true,
