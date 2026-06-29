@@ -1,5 +1,5 @@
 {
-  "name": "PJM Sensor for HomeAssistant",
+  "name": "PJM Sensor for HomeAssistant (MFM)",
   "description": "A Home Assistant integration to monitor PJM grid data.",
   "filename": "pjm_sensor",
   "domains": ["pjm"],
