@@ -15,6 +15,7 @@ from datetime import datetime, date, time, timezone, timedelta
 import logging
 import urllib.parse
 import time as time_module
+import holidays
 
 import async_timeout
 import aiohttp
@@ -51,6 +52,7 @@ from .const import (
     DEFAULT_ACCURACY_THRESHOLD,
     ZONE_TO_PNODE_ID,
     SENSOR_TYPES,
+    PJM_HOLIDAYS
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -303,6 +305,11 @@ class CoincidentPeakPredictionSensor(SensorEntity):
       - Uses a kinematic (quadratic) model to predict the daily peak time and load.
       - Switches between daily and short forecasts based on how close we are to the predicted peak.
       - Flags high-risk days based on 5CP logic.
+
+    CHANGES:
+      1. Removes high risk designation for non-5CP eligible days (holidays and weekends)
+      2. Changes peak measurement to be hourly average, not instantaneous peak to match 5CP logic
+      3. Following 2, exposes current hourly average as state
     """
     ACCELERATION_THRESHOLD = 500  # MW/hr², easy to adjust centrally
     MAX_VALID_PEAK_WINDOW = 3    # hours
@@ -319,11 +326,14 @@ class CoincidentPeakPredictionSensor(SensorEntity):
         self._unit_of_measurement = "MW"
         self._last_reset_date = date.today()
         
-        # The main sensor state is the current instantaneous load.
+        # The main sensor state is the moving average load for current hour (relies on self._load_history)
         self._state = None
         
         # Rolling load history (timestamp, load) for derivative calculations (~1-2 hours)
         self._load_history = deque(maxlen=36)
+
+        # Instantaneous load
+        self._current_load = None
         
         # Forecast update trackers
         self._last_daily_forecast_update = None
@@ -403,6 +413,7 @@ class CoincidentPeakPredictionSensor(SensorEntity):
         ]
 
         return {
+            "current_load": self._current_load,
             "predicted_peak": self._predicted_peak,
             "predicted_peak_time": (
                 self._predicted_peak_time.isoformat()
@@ -471,7 +482,7 @@ class CoincidentPeakPredictionSensor(SensorEntity):
 
         # 1. Update instantaneous load and record history.
         if not hasattr(self, '_last_load_update') or (now - self._last_load_update) >= timedelta(minutes=5):    
-            success = await self._update_instantaneous_load()
+            success = await self._update_current_load()#self._update_instantaneous_load()
             if success:
                 now = dt_util.now()
                 self._last_load_update = now
@@ -498,9 +509,18 @@ class CoincidentPeakPredictionSensor(SensorEntity):
                         self._weighted_peak_prediction()
         
         # Check real-time load exceedance
-        if self._state and self._predicted_peak and self._state > self._predicted_peak:
-            self._predicted_peak = self._state
-            self._predicted_peak_time = now
+        # TODO: See if there is a more sophisticated way to forecast current hourly average beyond
+        # average thus far (e.g., using kinematics)
+        if self._state != None and self._load_history != None and self._current_load != None:
+          last_meas_t = self._load_history[-1][0]
+          cur_hr_forecast = (self._state * last_meas_t.minute + \
+                             self._current_load * (60 - last_meas_t.minute)) / 60
+        else:
+          cur_hr_forecast = None
+        if cur_hr_forecast != None and self._predicted_peak and cur_hr_forecast > self._predicted_peak:
+            self._predicted_peak = cur_hr_forecast
+            self._predicted_peak_time = max(d[0] for d in self._load_history if d[0].hour == now.hour,
+                                            key=lambda p: p[1])
             _LOGGER.warning("Immediate peak adjustment due to real-time exceedance.")
 
         # 4. Evaluate high-risk day and peak hour active status.
@@ -521,27 +541,42 @@ class CoincidentPeakPredictionSensor(SensorEntity):
             _LOGGER.info("Peak detected: Actual peak %.1f MW at %s. Freezing further forecasts.",
                         self._max_daily_load, self._max_daily_load_time)
 
-    async def _update_instantaneous_load(self):
+    #async def _update_instantaneous_load(self):
+     async def _update_current_load(self):
         """Fetch the current load from PJMData and update state, load history, and maximum daily load."""
         try:
             load_val = await self._pjm_data.async_update_instantaneous(self._zone)
             if load_val is not None:
                 now = dt_util.now()
-                self._state = load_val
+                self._current_load = load_val
+              
+              # Update the rolling hourly average
+              last_meas_t = self._load_history[-1][0]
+                if last_meas_t.hour != now.hour:
+                  last_hr_load = (self._state * last_meas_t.minute + \
+                                  load_val * (60 - last_meas_t.minute)) / 60
+                  peak_time = max(d[0] for d in self._load_history if d[0].hour == now.hour,
+                                  key=lambda p: p[1])
+                  # Update maximum daily load within this method.
+                  if not hasattr(self, "_max_daily_load") or self._max_daily_load is None:
+                      self._max_daily_load = last_hr_load#load_val
+                      self._max_daily_load_time = peak_time
+                  elif self._state > self._max_daily_load:#load_val > self._max_daily_load:
+                      self._max_daily_load = self._state#load_val
+                      self._max_daily_load_time = peak_time
+                  
+                  self._state = load_val
+                else:
+                  self._state = (last_meas_t.minute * self._state + \
+                                 (now.minute - last_meas_t.minute) * load_val) \
+                                / now.minute
+                #self._state = load_val
                 self._load_history.append((now, load_val))
                 
                 #if self._state and self._predicted_peak and self._state > self._predicted_peak:
                 #    _LOGGER.warning("Real-time load %.0f MW exceeds predicted peak %.0f MW. Adjusting immediately.", self._state, self._predicted_peak)
                 #    self._predicted_peak = self._state
                 #    self._predicted_peak_time = dt_util.now()
-
-                # Update maximum daily load within this method.
-                if not hasattr(self, "_max_daily_load") or self._max_daily_load is None:
-                    self._max_daily_load = load_val
-                    self._max_daily_load_time = now
-                elif load_val > self._max_daily_load:
-                    self._max_daily_load = load_val
-                    self._max_daily_load_time = now
                 return True
         except Exception as err:
             _LOGGER.error("Error updating instantaneous load: %s", err)
@@ -736,11 +771,11 @@ class CoincidentPeakPredictionSensor(SensorEntity):
         _LOGGER.info( # Log raw inputs once
             "Kinematic inputs: current_load=%.1f, obs_roc=%.2f, obs_acc=%.2f, "
             "fcst_roc=%.2f, fcst_acc=%.2f, roc_bias=%.2f, acc_bias=%.2f",
-            self._state or 0.0, self._observed_roc, self._observed_acc,
+            self._current_load or 0.0, self._observed_roc, self._observed_acc,
             self._forecasted_roc, self._forecasted_acc, self._roc_bias, self._acc_bias
         )
 
-        if self._state is None:
+        if self._current_load is None:
             return
 
         # --- Time to peak awareness ---
@@ -784,7 +819,7 @@ class CoincidentPeakPredictionSensor(SensorEntity):
             return
 
         # Predict load
-        predicted_load = self._state + blended_roc * t_peak + 0.5 * blended_acc * (t_peak ** 2)
+        predicted_load = self._current_load + blended_roc * t_peak + 0.5 * blended_acc * (t_peak ** 2)
         predicted_load += self._magnitude_bias
 
         self._kinematic_peak = int(round(predicted_load))
@@ -826,16 +861,40 @@ class CoincidentPeakPredictionSensor(SensorEntity):
         peak_magnitude = sum((p[1] * w for p, w in zip(predictions, weights))) / sum(weights)
         #_LOGGER.info("Weighted Average:", peak_magnitude, peak_time)
         self._predicted_peak_time = datetime.fromtimestamp(peak_time, tz=timezone.utc)
-        self._predicted_peak = peak_magnitude
+        
+        # If we think the peak happens in this hour, predict the average load for this hour
+        # If we think the peak will happen in a future hour, conservatively estimate the average for that hour
+        # at the predicted instantaneous peak
+        if self._state != None and now.hour == self._predicted_peak_time.hour:
+          last_meas = self._load_history[-1][1]
+          last_meas_t = self._load_history[-1][0]
+          if (peak_time > now):
+            self._predicted_peak = (self._state * last_meas_t.minute + \
+                                    peak_magnitude * (60 - last_meas_t.minute) / 60
+          elif:
+            self._predicted_peak = (self._state * last_meas_t.minute + \
+                                    last_meas * (60 - last_meas_t.minute) / 60
+        else:
+          self._predicted_peak = peak_magnitude
 
+    # TODO: Exclude non-5CP days (weekends and holidays)
     def _evaluate_5cp_risk(self):
         """Flag high-risk day if predicted peak is near or exceeds the 5th highest historical peak."""
-        if not self._predicted_peak:
+        weekend = date.today().weekday() >= 5
+        holiday = False # TODO: Add PJM holidays
+        if not self._predicted_peak or weekend or holiday:
             self._high_risk_day = False
             return
         fifth_peak = self._get_fifth_highest_peak()
         self._high_risk_day = self._predicted_peak >= 0.95 * fifth_peak
 
+    def _is_pjm_holiday(self):
+      us_holidays = holidays.US()
+      try:
+        return us_holidays.get(date.today()) in PJM_HOLIDAYS
+      except KeyError:
+        return False
+        
     def _check_peak_hour_active(self, now):
         """
         Set peak_hour_active True if the current time falls within the hour of the predicted peak,
