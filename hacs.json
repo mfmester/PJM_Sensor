@@ -2,7 +2,7 @@
   "name": "PJM Sensor for HomeAssistant (MFM)",
   "description": "A Home Assistant integration to monitor PJM grid data.",
   "filename": "pjm_sensor",
-  "domains": ["pjm"],
+  "domains": ["pjm_mfm"],
   "country": ["US"],
   "homeassistant": "2021.6.0",
   "iot_class": "cloud_polling",
