@@ -1,6 +1,6 @@
 {
   "domain": "pjm",
-  "name": "PJM Sensor",
+  "name": "PJM Sensor (MFM)",
   "version": "2.1.5",
   "documentation": "https://github.com/jabbauer/PJM_sensor",
   "requirements": ["aiohttp", "async_timeout", "voluptuous", "numpy", "scipy", "holidays"],
