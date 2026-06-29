@@ -1,5 +1,5 @@
 """Constants for HA PJM Sensor integration."""
-DOMAIN = "pjm"
+DOMAIN = "pjm_mfm"
 
 CONF_API_KEY = "api_key"
 CONF_UPDATE_FREQUENCY = "update_frequency"
